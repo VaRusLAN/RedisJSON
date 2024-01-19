@@ -158,6 +158,8 @@ pub struct RedisJSON<T> {
 }
 
 pub mod type_methods {
+    use redis_module::{Context, RedisString, RedisModule_GetContextFromIO, RedisModule_EmitAOF};
+
     use super::*;
     use std::{ffi::CString, ptr::null_mut};
 
@@ -254,5 +256,37 @@ pub mod type_methods {
             phantom: PhantomData,
         };
         manager.get_memory(&json.data).unwrap_or(0)
+    }
+
+    /// # Safety
+    #[allow(non_snake_case, unused, clippy::redundant_clone)]
+    pub unsafe extern "C" fn aof_rewrite(
+        io: *mut raw::RedisModuleIO, 
+        key: *mut raw::RedisModuleString, 
+        value: *mut c_void
+    ) {
+        let ctx = Context::new(RedisModule_GetContextFromIO.unwrap()(io));
+        
+        let mut out = serde_json::Serializer::new(Vec::new());
+        let v = unsafe { &*value.cast::<RedisJSON<ijson::IValue>>() };
+        v.data.serialize(&mut out).unwrap();
+        let json = String::from_utf8(out.into_inner()).unwrap();
+        
+        let key_arg = RedisString::from_redis_module_string(ctx.ctx, key).clone();
+        let path_arg = ctx.create_string("$");
+        let json_arg = ctx.create_string(json);
+        
+        let cmd = CString::new("JSON.SET").unwrap();
+        let fmt = CString::new("v").unwrap();
+        let args = vec![&key_arg, &path_arg, &json_arg];
+        let call_args: Vec<*mut raw::RedisModuleString> = args.iter().map(|v| v.inner).collect();
+
+        RedisModule_EmitAOF.unwrap()(
+            io, 
+            cmd.as_ptr(), 
+            fmt.as_ptr(), 
+            call_args.as_slice().as_ptr(),
+            call_args.len()
+        );
     }
 }
